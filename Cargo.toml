@@ -8,11 +8,13 @@ edition = "2021"
 
 [dependencies]
 # atspi = { version = "0.17.0", default-features = false, features = ["tokio"] }
-atspi = { path = "../atspi-arc-deref/atspi/atspi", default-features = false, features = ["tokio"] }
-tokio = { version = "1.29.0", features = ["full"] }
+atspi = { git = "https://github.com/odilia-app/atspi.git", branch="fix_prop_change_ev", default-features = false, features = ["tokio"] }
+tokio = { version = "1.29.1", features = ["full", "time"] }
 tokio-stream = { version = "0.1.14", features = ["full"] }
 zbus = { version = "3.13.1", features = ["tokio"] }
-termion = "2"
+crossterm = "0.26.1"
+tui = "0.19.0"
+rand = "0.8.5"
 
 [profile.release]
 lto = true
