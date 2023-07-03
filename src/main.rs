@@ -11,6 +11,13 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use ratatui::{
+    backend::{Backend, CrosstermBackend},
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    widgets::{Block, Borders, Sparkline},
+    Frame, Terminal,
+};
 use std::{
     io,
     sync::{
@@ -20,68 +27,89 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_stream::StreamExt;
-use tui::{
-    backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    widgets::{Block, Borders, Sparkline},
-    Frame, Terminal,
-};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 // Tick duration in milliseconds
-const TICK_MS: u64 = 100;
+const TICK_MS: Duration = Duration::from_millis(100);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct AtspiEventCount {
-    counter: Arc<AtomicU64>,
-    counter_second: Arc<AtomicU64>,
+    counter: AtomicU64,
 }
 
 impl AtspiEventCount {
     pub fn new() -> AtspiEventCount {
-        let counter = Arc::new(AtomicU64::new(0));
-        let counter_second = Arc::new(AtomicU64::new(0));
-        AtspiEventCount {
-            counter,
-            counter_second,
-        }
+        let counter = AtomicU64::new(0);
+        AtspiEventCount { counter }
     }
-}
 
-impl Iterator for AtspiEventCount {
-    type Item = u64;
-    fn next(&mut self) -> Option<u64> {
-        Some(self.counter.swap(0, Ordering::SeqCst))
+    /// Get-and-reset of the counter.
+    pub fn reset(&self) -> u64 {
+        self.counter.swap(0, Ordering::SeqCst)
+    }
+
+    /// Increment counter by one.
+    pub fn plus_one(&self) {
+        let _ = self.counter.fetch_add(1, Ordering::SeqCst);
     }
 }
 
 struct App {
-    signal: AtspiEventCount,
-    data1: Vec<u64>,
-    data_per_second: Arc<Mutex<Vec<u64>>>,
-    total: Arc<AtomicU64>,
+    // The counters
+    tick_counter: AtspiEventCount,
+    secs_counter: AtspiEventCount,
+
+    // The data stores
+    tick_data: Mutex<Vec<u64>>,
+    secs_data: Mutex<Vec<u64>>,
+    total: AtomicU64,
 }
 
 impl App {
     fn new() -> App {
-        let signal = AtspiEventCount::new();
-        let data1: Vec<u64> = vec![0; 200];
-        let data_per_second: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::with_capacity(1800)));
+        // Init counters
+        let tick_counter = AtspiEventCount::new();
+        let secs_counter = AtspiEventCount::new();
+
+        // Init data stores
+        let tick_data = Mutex::new(vec![0; 200]);
+        let secs_data = Mutex::new(Vec::with_capacity(1800)); // 30 minutes
+        let total = AtomicU64::new(0);
 
         App {
-            signal,
-            data1,
-            data_per_second,
-            total: Arc::new(AtomicU64::new(0)),
+            tick_counter,
+            secs_counter,
+            tick_data,
+            secs_data,
+            total,
         }
     }
 
-    fn on_tick(&mut self) {
-        let value = self.signal.next().unwrap();
-        self.data1.pop();
-        self.data1.insert(0, value);
+    /// Update the per-tick data store and reset the per-tick counter.
+    fn on_tick(&self) {
+        // Get current value and reset the per-tick counter.
+        let value = self.tick_counter.reset();
+
+        // A circular buffer of tick data:
+        let mut tick_data = self.tick_data.lock().unwrap();
+
+        tick_data.pop();
+        tick_data.insert(0, value);
+        self.total.fetch_add(value, Ordering::SeqCst);
+    }
+
+    /// Update the per-second data store and reset the per-second counter.
+    /// Also update the total.
+    fn on_second(&self) {
+        // Get current value and reset the per-second counter.
+        let value = self.secs_counter.reset();
+
+        // Per second data:
+        let mut secs_data = self.secs_data.lock().unwrap();
+        secs_data.push(value);
+
+        // Update total
         self.total.fetch_add(value, Ordering::SeqCst);
     }
 }
@@ -113,35 +141,33 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Create the app's state
+    let app = Arc::new(App::new());
+
     // Obtain a stream of AT-SPI events
-    let conn = atspi_setup_connection().await?;
-    let mut events = conn.event_stream();
+    let a11y_bus = atspi_setup_connection().await?;
+    let mut events = a11y_bus.event_stream();
 
-    // Monitor the stream of events, update the state of App.
-    let app = App::new();
-    let counter = app.signal.counter.clone();
-    let counter_second = app.signal.counter_second.clone();
-
+    // Event -> update counters.
+    let app_clone = Arc::clone(&app);
     tokio::spawn(async move {
         while let Some(Ok(_event)) = events.next().await {
-            counter.fetch_add(1, Ordering::SeqCst);
-            counter_second.fetch_add(1, Ordering::SeqCst);
+            app_clone.tick_counter.plus_one();
+            app_clone.secs_counter.plus_one();
         }
     });
 
-    let counter_second = app.signal.counter_second.clone();
-    let data_per_second = app.data_per_second.clone();
+    let app_clone = Arc::clone(&app);
+    // Each second, update the secs_data store and reset the counter.
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let mut data = data_per_second.lock().unwrap();
-            data.push(counter_second.swap(0, Ordering::SeqCst));
+            app_clone.on_second();
         }
     });
 
-    let tick_rate = Duration::from_millis(TICK_MS);
-
-    let res = run_app(&mut terminal, app, tick_rate);
+    let app_clone = Arc::clone(&app);
+    let res = run_app(&mut terminal, app_clone, TICK_MS);
 
     // restore terminal
     disable_raw_mode()?;
@@ -161,12 +187,15 @@ async fn main() -> Result<()> {
 
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
-    mut app: App,
+    app: Arc<App>,
     tick_rate: Duration,
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
+
+    let app = Arc::clone(&app);
     loop {
-        terminal.draw(|f| ui(f, &app))?;
+        let app_clone = Arc::clone(&app);
+        terminal.draw(|f| ui(f, app_clone))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
@@ -178,26 +207,30 @@ fn run_app<B: Backend>(
                 }
             }
         }
+
+        let app_clone = Arc::clone(&app);
         if last_tick.elapsed() >= tick_rate {
-            app.on_tick();
+            app_clone.on_tick();
             last_tick = Instant::now();
         }
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([Constraint::Length(10), Constraint::Min(0)].as_ref())
         .split(f.size());
+
+    let tick_data = app.tick_data.lock().unwrap();
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title("Last 200 D-Bus Accessibility (AT-SPI2) events")
+                .title("-::[AT-SPI2 Bus event monitor]::-")
                 .borders(Borders::LEFT | Borders::RIGHT),
         )
-        .data(&app.data1)
+        .data(&tick_data)
         .style(Style::default().fg(Color::Yellow));
     f.render_widget(sparkline, chunks[0]);
 }
