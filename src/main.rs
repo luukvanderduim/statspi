@@ -15,7 +15,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    widgets::{Block, Borders, Sparkline},
+    widgets::{Block, Borders, Cell, Row, Sparkline, Table},
     Frame, Terminal,
 };
 use std::{
@@ -220,17 +220,64 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
-        .constraints([Constraint::Length(10), Constraint::Min(0)].as_ref())
+        .constraints([Constraint::Percentage(67), Constraint::Percentage(33)].as_ref())
         .split(f.size());
 
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(67), Constraint::Percentage(33)].as_ref())
+        .split(chunks[1]);
+
     let tick_data = app.tick_data.lock().unwrap();
+
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title("-::[AT-SPI2 Bus event monitor]::-")
-                .borders(Borders::LEFT | Borders::RIGHT),
+                .title("AT-SPI2 bus activity")
+                .border_style(Style::default().fg(Color::LightBlue))
+                .borders(Borders::ALL),
         )
         .data(&tick_data)
         .style(Style::default().fg(Color::Yellow));
+
+    let secs_data = app.secs_data.lock().unwrap();
+
+    // Compute the current, max, avg and total values.
+    let current: Cell = Cell::from(secs_data.last().unwrap_or(&0).to_string());
+    let max: Cell = Cell::from(secs_data.iter().max().unwrap_or(&0).to_string());
+    let avg: Cell = Cell::from(
+        if secs_data.len() > 0 {
+            secs_data.iter().sum::<u64>() / secs_data.len() as u64
+        } else {
+            0
+        }
+        .to_string(),
+    );
+    let total: Cell = Cell::from(app.total.load(Ordering::SeqCst).to_string());
+
+    let column_data = vec![current, max, avg, total];
+
+    let table = Table::new(vec![
+        Row::new(vec!["Current", "Maximum", "Average", "Total"])
+            .bottom_margin(1)
+            .style(Style::default().fg(Color::LightYellow)),
+        Row::new(column_data),
+    ])
+    .style(Style::default().fg(Color::LightYellow))
+    .widths(&[
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(12),
+    ])
+    .column_spacing(2)
+    .block(
+        Block::default()
+            .title("Real-time figures AT-SPI2 bus:")
+            .border_style(Style::default().fg(Color::LightYellow))
+            .borders(Borders::ALL),
+    );
+
     f.render_widget(sparkline, chunks[0]);
+    f.render_widget(table, bottom[0]);
 }
