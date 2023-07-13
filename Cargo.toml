@@ -1,6 +1,6 @@
 [package]
 name = "statspi"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Luuk van der Duim <luukvanderduim@gmail.com>"]
 edition = "2021"
 
