@@ -14,7 +14,6 @@ tokio-stream = { version = "0.1.14", features = ["full"] }
 zbus = { version = "3.13.1", features = ["tokio"] }
 crossterm = "0.26.1"
 ratatui = "0.21.0"
-rand = "0.8.5"
 
 [profile.release]
 lto = true
