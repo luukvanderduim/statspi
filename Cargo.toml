@@ -7,13 +7,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# atspi = { version = "0.17.0", default-features = false, features = ["tokio"] }
-atspi = { git = "https://github.com/odilia-app/atspi.git", branch="fix_prop_change_ev", default-features = false, features = ["tokio"] }
+atspi = { git = "https://github.com/odilia-app/atspi.git", default-features = false, features = ["tokio", "proxies", "connection"]  }
+# atspi = { path = "../atspi-dbus-signals/atspi/atspi", default-features = false, features = ["tokio", "proxies", "connection"]  }
+#atspi = { version = "0.17.0", default-features = false, features = ["tokio", "proxies", "connection"] }
+futures-lite = "1.13.0"
 tokio = { version = "1.29.1", features = ["full", "time"] }
 tokio-stream = { version = "0.1.14", features = ["full"] }
-zbus = { version = "3.13.1", features = ["tokio"] }
+zbus = { version = "3.14.1", features = ["tokio"] }
 crossterm = "0.26.1"
-ratatui = "0.21.0"
+ratatui = "0.22.0"
+float-pretty-print = "0.1.1"
 
 [profile.release]
 lto = true

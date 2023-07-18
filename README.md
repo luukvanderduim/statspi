@@ -1,5 +1,3 @@
-![An early version stATSPI in action](/img/statspi.jpg)
-
 # stATSPI
 
 stATSPI is a tool for analyzing and visualizing AT-SPI accessibility data on Linux systems.
