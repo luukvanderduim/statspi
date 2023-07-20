@@ -23,10 +23,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_stream::StreamExt;
-use zbus::zvariant::ObjectPath;
+use zbus::{zvariant::ObjectPath, MatchRule};
 
-mod citizen;
-use citizen::BusCitizens;
+mod bus;
+use bus::BusPassengers;
 
 mod terminal;
 use terminal::{restore_terminal, setup_terminal};
@@ -109,8 +109,8 @@ struct App {
     // The AT-SPI2 connection
     a11y_conn: AccessibilityConnection,
 
-    // The bus citizens
-    citizens: BusCitizens,
+    // The bus passengers
+    passengers: BusPassengers,
 
     // Keeping the score
     tally: ScoreBoard,
@@ -128,8 +128,8 @@ impl App {
         // Get a connection to the AT-SPI D-Bus service
         let a11y_conn = atspi_setup_connection().await?;
 
-        // Get the bus citizens
-        let citizens = BusCitizens::new(a11y_conn.connection()).await?;
+        // Get the bus passengers
+        let passengers = BusPassengers::new(a11y_conn.connection()).await?;
 
         // Init counters
         let tally = ScoreBoard::default();
@@ -143,7 +143,7 @@ impl App {
 
         Ok(App {
             a11y_conn,
-            citizens,
+            passengers,
             tally,
             rt_stats,
             tick_data,
@@ -213,13 +213,13 @@ async fn atspi_setup_connection() -> Result<AccessibilityConnection> {
     atspi.register_event::<ObjectEvents>().await?;
     atspi.register_event::<TerminalEvents>().await?;
 
-    // let dbus = zbus::fdo::DBusProxy::new(atspi.connection()).await?;
-    // let cache_signals = MatchRule::builder()
-    //     .msg_type(zbus::MessageType::Signal)
-    //     .interface("org.a11y.atspi.Cache")?
-    //     .build();
+    let dbus = zbus::fdo::DBusProxy::new(atspi.connection()).await?;
+    let cache_signals = MatchRule::builder()
+        .msg_type(zbus::MessageType::Signal)
+        .interface("org.a11y.atspi.Cache")?
+        .build();
 
-    // dbus.add_match_rule(cache_signals).await?;
+    dbus.add_match_rule(cache_signals).await?;
 
     Ok(atspi)
 }
@@ -255,13 +255,13 @@ async fn main() -> Result<()> {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
 
-            if app_clone.citizens.citizens.is_empty() {
-                continue;
+            if app_clone.passengers.line.is_empty() {
+                break;
             }
-            for citizen in app_clone.citizens.citizens.iter() {
+            for passenger in app_clone.passengers.line.iter() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
 
-                let Ok(mut guard) = citizen.try_lock() else {
+                let Ok(mut guard) = passenger.try_lock() else {
                     continue;
                 };
 

@@ -157,7 +157,7 @@ checksum = "1181e1e0d1fce796a03db1ae795d67167da795f9cf4a39c37589e85ef57f26d3"
 [[package]]
 name = "atspi"
 version = "0.17.0"
-source = "git+https://github.com/odilia-app/atspi.git#d2003b5a3d9659852bdd999ba0ea8899114fa8cb"
+source = "git+https://github.com/odilia-app/atspi.git#877735b0d1d31acfedab7f0473475fbd3dc7e9ec"
 dependencies = [
  "atspi-common",
  "atspi-connection",
@@ -167,7 +167,7 @@ dependencies = [
 [[package]]
 name = "atspi-common"
 version = "0.1.0"
-source = "git+https://github.com/odilia-app/atspi.git#d2003b5a3d9659852bdd999ba0ea8899114fa8cb"
+source = "git+https://github.com/odilia-app/atspi.git#877735b0d1d31acfedab7f0473475fbd3dc7e9ec"
 dependencies = [
  "enumflags2",
  "serde",
@@ -180,7 +180,7 @@ dependencies = [
 [[package]]
 name = "atspi-connection"
 version = "0.1.0"
-source = "git+https://github.com/odilia-app/atspi.git#d2003b5a3d9659852bdd999ba0ea8899114fa8cb"
+source = "git+https://github.com/odilia-app/atspi.git#877735b0d1d31acfedab7f0473475fbd3dc7e9ec"
 dependencies = [
  "atspi-common",
  "atspi-proxies",
@@ -191,7 +191,7 @@ dependencies = [
 [[package]]
 name = "atspi-proxies"
 version = "0.1.0"
-source = "git+https://github.com/odilia-app/atspi.git#d2003b5a3d9659852bdd999ba0ea8899114fa8cb"
+source = "git+https://github.com/odilia-app/atspi.git#877735b0d1d31acfedab7f0473475fbd3dc7e9ec"
 dependencies = [
  "atspi-common",
  "serde",

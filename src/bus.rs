@@ -59,7 +59,7 @@ impl std::fmt::Display for ResponseStats {
 }
 
 #[derive(Debug, Clone)]
-pub struct BusCitizen {
+pub struct BusPassenger {
     pub accessible_name: String,
     pub bus_name: zbus::names::OwnedBusName,
     pub accessible_proxy: AccessibleProxy<'static>,
@@ -69,7 +69,7 @@ pub struct BusCitizen {
 }
 
 #[allow(dead_code)]
-impl BusCitizen {
+impl BusPassenger {
     pub async fn get_role(&self) -> zbus::Result<Role> {
         self.accessible_proxy.get_role().await
     }
@@ -115,18 +115,18 @@ impl BusCitizen {
 }
 
 #[derive(Debug)]
-pub struct BusCitizens {
-    pub citizens: Vec<Arc<Mutex<BusCitizen>>>,
+pub struct BusPassengers {
+    pub line: Vec<Arc<Mutex<BusPassenger>>>,
 }
 
-#[allow(dead_code)]
-impl BusCitizens {
-    pub async fn new(conn: &Connection) -> Result<BusCitizens> {
+impl BusPassengers {
+    pub async fn new(conn: &Connection) -> Result<BusPassengers> {
         let dbus_proxy = zbus::fdo::DBusProxy::new(conn).await?;
         let bus_names = dbus_proxy.list_names().await?;
 
-        let mut citizens: Vec<Arc<Mutex<BusCitizen>>> = Vec::with_capacity(bus_names.len());
+        let mut line: Vec<Arc<Mutex<BusPassenger>>> = Vec::with_capacity(bus_names.len());
 
+        // Note that we coerced all bus_names to be owned. :-/
         for bus_name in bus_names {
             if bus_name.starts_with('x') {
                 let accessible_proxy = ProxyBuilder::new(conn)
@@ -163,7 +163,7 @@ impl BusCitizens {
                     continue;
                 };
 
-                let citizen = BusCitizen {
+                let passenger = BusPassenger {
                     accessible_name,
                     bus_name,
                     accessible_proxy,
@@ -171,26 +171,27 @@ impl BusCitizens {
                     stats: ResponseStats::default(),
                 };
 
-                let citizen = Arc::new(Mutex::new(citizen));
-                citizens.push(citizen);
+                let passenger = Arc::new(Mutex::new(passenger));
+                line.push(passenger);
             }
         }
-        citizens.shrink_to_fit();
+        line.shrink_to_fit();
 
         #[cfg(debug_assertions)]
-        for citizen in citizens.iter() {
-            let guard = citizen.lock().unwrap();
+        for passenger in line.iter() {
+            let guard = passenger.lock().unwrap();
             println!("{}: {}", guard.bus_name, guard.accessible_name);
         }
 
-        Ok(BusCitizens { citizens })
+        Ok(BusPassengers { line })
     }
 
-    pub fn get_citizen(&self, name: &str) -> Option<Arc<Mutex<BusCitizen>>> {
-        for citizen in self.citizens.iter() {
-            let guard = citizen.lock().unwrap();
+    #[allow(dead_code)]
+    pub fn get_passenger(&self, name: &str) -> Option<Arc<Mutex<BusPassenger>>> {
+        for passenger in self.line.iter() {
+            let guard = passenger.lock().unwrap();
             if guard.bus_name == name {
-                return Some(citizen.clone());
+                return Some(passenger.clone());
             }
         }
         None
