@@ -437,23 +437,23 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     let event_col2 = [object, document, terminal, cache];
     let event_col3 = [other];
 
-    let table = Table::new(vec![
-        Row::new(vec!["Rates in events / s.:"])
+    let table = Table::new([
+        Row::new(["Rates in events / s.:"])
             .style(Style::default().fg(Color::LightYellow))
             .bottom_margin(1),
-        Row::new(vec!["Current", "Maximum", "Average", "Total"])
+        Row::new(["Current", "Maximum", "Average", "Total"])
             .style(Style::default().fg(Color::LightYellow)),
         Row::new(column_data).bottom_margin(3),
-        Row::new(vec!["Categorized events:"])
+        Row::new(["Categorized events:"])
             .style(Style::default().fg(Color::LightYellow))
             .bottom_margin(1),
-        Row::new(vec!["Keyboard", "Focus", "Mouse", "Window"])
+        Row::new(["Keyboard", "Focus", "Mouse", "Window"])
             .style(Style::default().fg(Color::LightYellow)),
         Row::new(event_col1).bottom_margin(1),
-        Row::new(vec!["Object", "Document", "Terminal", "Cache"])
+        Row::new(["Object", "Document", "Terminal", "Cache"])
             .style(Style::default().fg(Color::LightYellow)),
         Row::new(event_col2).bottom_margin(1),
-        Row::new(vec!["Other"]).style(Style::default().fg(Color::LightYellow)),
+        Row::new(["Other"]).style(Style::default().fg(Color::LightYellow)),
         Row::new(event_col3).bottom_margin(1),
     ])
     .style(Style::default().fg(Color::LightYellow))
