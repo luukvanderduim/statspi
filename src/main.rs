@@ -90,11 +90,14 @@ struct ScoreBoard {
     object: Counter,
     terminal: Counter,
     cache: Counter,
+    listeners: Counter,
+    available: Counter,
     other: Counter,
 
     // Global counters
     tick_counter: Counter,
     secs_counter: Counter,
+    total_seconds: Counter,
     total: Counter,
 }
 
@@ -162,6 +165,8 @@ impl App {
             Ok(AtspiEvent::Object(_)) => self.tally.object.plus_one(),
             Ok(AtspiEvent::Terminal(_)) => self.tally.terminal.plus_one(),
             Ok(AtspiEvent::Cache(_)) => self.tally.cache.plus_one(),
+            Ok(AtspiEvent::Listener(_)) => self.tally.listeners.plus_one(),
+            Ok(AtspiEvent::Available(_)) => self.tally.available.plus_one(),
             _ => self.tally.other.plus_one(),
         }
         self.tally.tick_counter.plus_one();
@@ -190,12 +195,13 @@ impl App {
         }
 
         self.rt_stats.rate.set(value);
+        self.tally.total_seconds.plus(value);
 
         // Per second data:
         let mut data = self.secs_data.lock().unwrap();
         data.push(value);
         let len = data.len();
-        let mean = data.iter().sum::<u64>() / len as u64;
+        let mean = self.tally.total_seconds.load() / len as u64;
         self.rt_stats.mean.set(mean);
     }
 }
@@ -216,7 +222,7 @@ async fn atspi_setup_connection() -> Result<AccessibilityConnection> {
     let dbus = zbus::fdo::DBusProxy::new(atspi.connection()).await?;
     let cache_signals = MatchRule::builder()
         .msg_type(zbus::MessageType::Signal)
-        .interface("org.a11y.atspi.Cache")?
+        .interface("org.a11y.atspi.Event.Cache")?
         .build();
 
     dbus.add_match_rule(cache_signals).await?;
@@ -424,6 +430,20 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
             .add_modifier(ratatui::style::Modifier::BOLD),
     );
 
+    let available = Cell::from(app.tally.available.load().to_string()).style(
+        Style::default()
+            .fg(Color::LightGreen)
+            .bg(Color::Black)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    );
+
+    let listeners = Cell::from(app.tally.listeners.load().to_string()).style(
+        Style::default()
+            .fg(Color::LightGreen)
+            .bg(Color::Black)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    );
+
     let cache = Cell::from(app.tally.cache.load().to_string()).style(
         Style::default()
             .fg(Color::LightBlue)
@@ -441,7 +461,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     let column_data = [rate, max, mean, total];
     let event_col1 = [keyboard, mouse, focus, window];
     let event_col2 = [object, document, terminal, cache];
-    let event_col3 = [other];
+    let event_col3 = [available, listeners, other];
 
     let rates = Table::new([
         Row::new(["Last", "Peak", "Mean", "Total"]).style(Style::default().fg(Color::LightYellow)),
@@ -449,10 +469,10 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     ])
     .style(Style::default().fg(Color::LightYellow))
     .widths(&[
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Length(10),
+        Constraint::Length(10),
+        Constraint::Length(10),
     ])
     .column_spacing(1)
     .block(
@@ -470,7 +490,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
         Row::new(["Object", "Document", "Terminal", "Cache"])
             .style(Style::default().fg(Color::LightYellow)),
         Row::new(event_col2).bottom_margin(1),
-        Row::new(["Other"]).style(Style::default().fg(Color::LightYellow)),
+        Row::new(["Available", "Listeners", "Other"])
+            .style(Style::default().fg(Color::LightYellow)),
         Row::new(event_col3),
     ])
     .style(Style::default().fg(Color::LightYellow))
