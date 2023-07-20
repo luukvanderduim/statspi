@@ -331,6 +331,11 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
         .constraints([Constraint::Percentage(33), Constraint::Percentage(67)].as_ref())
         .split(chunks[1]);
 
+    let bottom_left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)].as_ref())
+        .split(bottom[0]);
+
     let tick_data = app.tick_data.lock().unwrap();
 
     let sparkline = Sparkline::default()
@@ -338,6 +343,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
             Block::default()
                 .title("AT-SPI2 signal monitor")
                 .border_style(Style::default().fg(Color::LightBlue))
+                .border_type(ratatui::widgets::BorderType::Rounded)
                 .borders(Borders::ALL),
         )
         .data(tick_data.as_slice())
@@ -364,9 +370,9 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     );
     let total = Cell::from(app.tally.total.load().to_string()).style(
         Style::default()
-            .fg(Color::LightBlue)
+            .fg(Color::LightMagenta)
             .bg(Color::Black)
-            .add_modifier(ratatui::style::Modifier::BOLD),
+            .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED),
     );
 
     let keyboard = Cell::from(app.tally.keyboard.load().to_string()).style(
@@ -437,24 +443,9 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     let event_col2 = [object, document, terminal, cache];
     let event_col3 = [other];
 
-    let table = Table::new([
-        Row::new(["Rates in events / s.:"])
-            .style(Style::default().fg(Color::LightYellow))
-            .bottom_margin(1),
-        Row::new(["Current", "Maximum", "Average", "Total"])
-            .style(Style::default().fg(Color::LightYellow)),
-        Row::new(column_data).bottom_margin(3),
-        Row::new(["Categorized events:"])
-            .style(Style::default().fg(Color::LightYellow))
-            .bottom_margin(1),
-        Row::new(["Keyboard", "Focus", "Mouse", "Window"])
-            .style(Style::default().fg(Color::LightYellow)),
-        Row::new(event_col1).bottom_margin(1),
-        Row::new(["Object", "Document", "Terminal", "Cache"])
-            .style(Style::default().fg(Color::LightYellow)),
-        Row::new(event_col2).bottom_margin(1),
-        Row::new(["Other"]).style(Style::default().fg(Color::LightYellow)),
-        Row::new(event_col3).bottom_margin(1),
+    let rates = Table::new([
+        Row::new(["Last", "Peak", "Mean", "Total"]).style(Style::default().fg(Color::LightYellow)),
+        Row::new(column_data).bottom_margin(2),
     ])
     .style(Style::default().fg(Color::LightYellow))
     .widths(&[
@@ -466,11 +457,39 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     .column_spacing(1)
     .block(
         Block::default()
-            .title("Real-time AT-SPI2 bus:")
+            .title("AT-SPI2 signal rate dashboard:")
             .border_style(Style::default().fg(Color::LightYellow))
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .borders(Borders::ALL),
+    );
+
+    let categories = Table::new([
+        Row::new(["Keyboard", "Focus", "Mouse", "Window"])
+            .style(Style::default().fg(Color::LightYellow)),
+        Row::new(event_col1).bottom_margin(1),
+        Row::new(["Object", "Document", "Terminal", "Cache"])
+            .style(Style::default().fg(Color::LightYellow)),
+        Row::new(event_col2).bottom_margin(1),
+        Row::new(["Other"]).style(Style::default().fg(Color::LightYellow)),
+        Row::new(event_col3),
+    ])
+    .style(Style::default().fg(Color::LightYellow))
+    .widths(&[
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(8),
+    ])
+    .column_spacing(1)
+    .block(
+        Block::default()
+            .title("Categorized signals")
+            .border_style(Style::default().fg(Color::LightYellow))
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .borders(Borders::ALL),
     );
 
     f.render_widget(sparkline, chunks[0]);
-    f.render_widget(table, bottom[0]);
+    f.render_widget(rates, bottom_left[0]);
+    f.render_widget(categories, bottom_left[1]);
 }
