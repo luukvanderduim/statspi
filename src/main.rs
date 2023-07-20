@@ -222,7 +222,7 @@ async fn atspi_setup_connection() -> Result<AccessibilityConnection> {
     let dbus = zbus::fdo::DBusProxy::new(atspi.connection()).await?;
     let cache_signals = MatchRule::builder()
         .msg_type(zbus::MessageType::Signal)
-        .interface("org.a11y.atspi.Event.Cache")?
+        .interface("org.a11y.atspi.Cache")?
         .build();
 
     dbus.add_match_rule(cache_signals).await?;
