@@ -2,19 +2,21 @@ use atspi::{
     connection::AccessibilityConnection,
     events::{
         document::DocumentEvents, focus::FocusEvents, keyboard::KeyboardEvents, mouse::MouseEvents,
-        object::ObjectEvents, terminal::TerminalEvents, window::WindowEvents,
+        object::ObjectEvents, terminal::TerminalEvents, window::WindowEvents, AddAccessibleEvent,
+        Event as AtspiEvent, EventListenerDeregisteredEvent, EventListenerRegisteredEvent,
+        LegacyAddAccessibleEvent, RemoveAccessibleEvent,
     },
-    Event as AtspiEvent,
 };
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    widgets::{Block, Borders, Cell, Row, Sparkline, Table},
+    widgets::{Block, Borders, Cell, ListItem, Row, Sparkline, Table},
     Frame, Terminal,
 };
 use std::{
+    collections::HashSet,
     io,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -23,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_stream::StreamExt;
-use zbus::{zvariant::ObjectPath, MatchRule};
+use zbus::zvariant::ObjectPath;
 
 mod bus;
 use bus::BusPassengers;
@@ -92,7 +94,8 @@ struct ScoreBoard {
     cache: Counter,
     listeners: Counter,
     available: Counter,
-    other: Counter,
+    other_event: Counter,
+    error: Counter,
 
     // Global counters
     tick_counter: Counter,
@@ -118,6 +121,9 @@ struct App {
     // Keeping the score
     tally: ScoreBoard,
 
+    // Error set
+    error_set: Arc<Mutex<HashSet<String>>>,
+
     // Tick/secs stats
     rt_stats: RtStats,
 
@@ -137,6 +143,9 @@ impl App {
         // Init counters
         let tally = ScoreBoard::default();
 
+        // error map
+        let error_set = Arc::new(Mutex::new(HashSet::new()));
+
         // Init rate stats
         let rt_stats = RtStats::default();
 
@@ -151,6 +160,7 @@ impl App {
             rt_stats,
             tick_data,
             secs_data,
+            error_set,
         })
     }
 
@@ -167,7 +177,15 @@ impl App {
             Ok(AtspiEvent::Cache(_)) => self.tally.cache.plus_one(),
             Ok(AtspiEvent::Listener(_)) => self.tally.listeners.plus_one(),
             Ok(AtspiEvent::Available(_)) => self.tally.available.plus_one(),
-            _ => self.tally.other.plus_one(),
+            Ok(_) => self.tally.other_event.plus_one(),
+            Err(e) => {
+                self.tally.error.plus_one();
+                let msg = format!("{:?}", e);
+                let mut set = self.error_set.lock().unwrap();
+                if !set.contains(&msg) {
+                    set.insert(msg);
+                }
+            }
         }
         self.tally.tick_counter.plus_one();
         self.tally.secs_counter.plus_one();
@@ -219,13 +237,15 @@ async fn atspi_setup_connection() -> Result<AccessibilityConnection> {
     atspi.register_event::<ObjectEvents>().await?;
     atspi.register_event::<TerminalEvents>().await?;
 
-    let dbus = zbus::fdo::DBusProxy::new(atspi.connection()).await?;
-    let cache_signals = MatchRule::builder()
-        .msg_type(zbus::MessageType::Signal)
-        .interface("org.a11y.atspi.Cache")?
-        .build();
-
-    dbus.add_match_rule(cache_signals).await?;
+    atspi.register_event::<AddAccessibleEvent>().await?;
+    atspi.register_event::<LegacyAddAccessibleEvent>().await?;
+    atspi.register_event::<RemoveAccessibleEvent>().await?;
+    atspi
+        .register_event::<EventListenerDeregisteredEvent>()
+        .await?;
+    atspi
+        .register_event::<EventListenerRegisteredEvent>()
+        .await?;
 
     Ok(atspi)
 }
@@ -342,6 +362,11 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)].as_ref())
         .split(bottom[0]);
 
+    let bottom_right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(bottom[1]);
+
     let tick_data = app.tick_data.lock().unwrap();
 
     let sparkline = Sparkline::default()
@@ -451,17 +476,24 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
             .add_modifier(ratatui::style::Modifier::BOLD),
     );
 
-    let other = Cell::from(app.tally.other.load().to_string()).style(
+    let other_event = Cell::from(app.tally.other_event.load().to_string()).style(
         Style::default()
             .fg(Color::LightRed)
             .bg(Color::Black)
             .add_modifier(ratatui::style::Modifier::BOLD),
     );
 
+    let error = Cell::from(app.tally.error.load().to_string()).style(
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    );
+
     let column_data = [rate, max, mean, total];
     let event_col1 = [keyboard, mouse, focus, window];
     let event_col2 = [object, document, terminal, cache];
-    let event_col3 = [available, listeners, other];
+    let event_col3 = [available, listeners, other_event, error];
 
     let rates = Table::new([
         Row::new(["Last", "Peak", "Mean", "Total"]).style(Style::default().fg(Color::LightYellow)),
@@ -490,7 +522,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
         Row::new(["Object", "Document", "Terminal", "Cache"])
             .style(Style::default().fg(Color::LightYellow)),
         Row::new(event_col2).bottom_margin(1),
-        Row::new(["Available", "Listeners", "Other"])
+        Row::new(["Available", "Listeners", "Other", "Error"])
             .style(Style::default().fg(Color::LightYellow)),
         Row::new(event_col3),
     ])
@@ -510,7 +542,26 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
             .borders(Borders::ALL),
     );
 
+    let binding = app.error_set.lock().unwrap();
+    let error_list = ratatui::widgets::List::new(
+        binding
+            .iter()
+            .map(|errs| ListItem::new(errs.as_str()))
+            .collect::<Vec<ListItem<'_>>>(),
+    )
+    .block(
+        Block::default()
+            .title("Errors")
+            .border_style(Style::default().fg(Color::LightRed))
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .borders(Borders::ALL),
+    )
+    .style(Style::default().fg(Color::LightRed))
+    .highlight_style(Style::default().fg(Color::Red))
+    .highlight_symbol(">> ");
+
     f.render_widget(sparkline, chunks[0]);
     f.render_widget(rates, bottom_left[0]);
     f.render_widget(categories, bottom_left[1]);
+    f.render_widget(error_list, bottom_right[0]);
 }
