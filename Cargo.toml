@@ -8,8 +8,6 @@ edition = "2021"
 
 [dependencies]
 atspi = { git = "https://github.com/odilia-app/atspi.git", default-features = false, features = ["tokio", "proxies", "connection"]  }
-# atspi = { path = "../atspi-dbus-signals/atspi/atspi", default-features = false, features = ["tokio", "proxies", "connection"]  }
-#atspi = { version = "0.17.0", default-features = false, features = ["tokio", "proxies", "connection"] }
 futures-lite = "1.13.0"
 tokio = { version = "1.29.1", features = ["full", "time"] }
 tokio-stream = { version = "0.1.14", features = ["full"] }
@@ -22,6 +20,7 @@ float-pretty-print = "0.1.1"
 lto = true
 opt-level = 3
 codegen-units = 1
+target-cpu = "native"
 
 [profile.dev]   
 lto = false
