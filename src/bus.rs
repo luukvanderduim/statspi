@@ -7,7 +7,8 @@ use float_pretty_print::PrettyPrintFloat;
 use futures_lite::future::block_on;
 use std::sync::Mutex;
 use std::{fmt::Formatter, sync::Arc, time::Duration};
-use zbus::{Connection, ProxyBuilder};
+use tokio::time::timeout;
+use zbus::{names::BusName, Connection, ProxyBuilder};
 
 #[derive(Debug, Clone, Default)]
 pub struct ResponseStats {
@@ -58,8 +59,8 @@ impl std::fmt::Display for ResponseStats {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BusPassenger {
+#[derive(Debug)]
+pub struct Server {
     pub accessible_name: String,
     pub bus_name: zbus::names::OwnedBusName,
     pub accessible_proxy: AccessibleProxy<'static>,
@@ -69,7 +70,7 @@ pub struct BusPassenger {
 }
 
 #[allow(dead_code)]
-impl BusPassenger {
+impl Server {
     pub async fn get_role(&self) -> zbus::Result<Role> {
         self.accessible_proxy.get_role().await
     }
@@ -80,9 +81,11 @@ impl BusPassenger {
         self.accessible_proxy.name().await
     }
 
-    pub fn acquire_rtt(&mut self) -> Option<Duration> {
+    pub fn acquire_rtt(&self) -> Option<Duration> {
+        let deadline = Duration::from_millis(50);
         let start = std::time::Instant::now();
-        if block_on(self.get_role()).is_ok() {
+
+        if block_on(timeout(deadline, self.get_role())).is_ok() {
             return Some(start.elapsed());
         }
 
@@ -90,10 +93,10 @@ impl BusPassenger {
     }
 
     pub fn update_rtt_stats(&mut self, res: Duration) {
-        if self.stats.min.is_none() || self.stats.min.unwrap() > res {
+        if self.stats.min.is_none() || res < self.stats.min.unwrap() {
             self.stats.min.replace(res);
         }
-        if self.stats.max.is_none() || self.stats.max.unwrap() < res {
+        if self.stats.max.is_none() || res > self.stats.max.unwrap() {
             self.stats.max.replace(res);
         }
 
@@ -115,83 +118,73 @@ impl BusPassenger {
 }
 
 #[derive(Debug)]
-pub struct BusPassengers {
-    pub line: Vec<Arc<Mutex<BusPassenger>>>,
+pub struct Servers {
+    pub bus: Vec<Arc<Mutex<Server>>>,
 }
 
-impl BusPassengers {
-    pub async fn new(conn: &Connection) -> Result<BusPassengers> {
-        let dbus_proxy = zbus::fdo::DBusProxy::new(conn).await?;
-        let bus_names = dbus_proxy.list_names().await?;
+impl Servers {
+    pub async fn new(conn: &Connection) -> Result<Servers> {
+        let registry_as_accessible: AccessibleProxy = ProxyBuilder::new(conn)
+            .interface("org.a11y.atspi.Accessible")?
+            .path(ACCESSIBLE_ROOT_PATH)?
+            .destination("org.a11y.atspi.Registry")?
+            .build()
+            .await?;
 
-        let mut line: Vec<Arc<Mutex<BusPassenger>>> = Vec::with_capacity(bus_names.len());
+        // Registry considers all accessible programs on the bus its children.
+        let a11ies = registry_as_accessible.get_children().await?;
+        let mut bus: Vec<Arc<Mutex<Server>>> = Vec::with_capacity(a11ies.len());
 
-        // Note that we coerced all bus_names to be owned. :-/
-        for bus_name in bus_names {
-            if bus_name.starts_with('x') {
-                let accessible_proxy = ProxyBuilder::new(conn)
-                    .interface("org.a11y.atspi.Accessible")?
-                    .path(ACCESSIBLE_ROOT_PATH)?
-                    .destination(bus_name.clone())?
-                    .build()
-                    .await;
+        for a11y in a11ies {
+            let name = a11y.name.clone();
+            let name = name.trim().to_string(); // Remove whitespace.
+            let accessible_proxy: AccessibleProxy = ProxyBuilder::new(conn)
+                .interface("org.a11y.atspi.Accessible")?
+                .path(ACCESSIBLE_ROOT_PATH)?
+                .destination(name.clone())?
+                .build()
+                .await?;
 
-                if accessible_proxy.is_err() {
-                    continue;
-                };
+            // Skip if the accessible application does not expose a `name` property.
+            let Ok(accessible_name) = accessible_proxy.name().await else {
+                continue;
+            };
+            #[cfg(debug_assertions)]
+            println!(" ({})", accessible_name);
 
-                let accessible_proxy: AccessibleProxy = accessible_proxy.unwrap();
+            let Ok(application_proxy) = zbus::ProxyBuilder::new(conn)
+                .interface("org.a11y.atspi.Application")?
+                .path(ACCESSIBLE_ROOT_PATH)?
+                .destination(name.clone())?
+                .build()
+                .await
+            else {
+                continue;
+            };
 
-                // Might return an accessible_proxy even if the bus_name is not an AT-SPI2
-                // application. So call get_application() to check.
+            let bus_name = BusName::try_from(a11y.name.clone())?;
 
-                if accessible_proxy.get_application().await.is_err() {
-                    continue;
-                };
+            let server = Server {
+                accessible_name,
+                bus_name: bus_name.into(),
+                accessible_proxy,
+                application_proxy,
+                stats: ResponseStats::default(),
+            };
 
-                let Ok(accessible_name) = accessible_proxy.name().await else {
-                    continue;
-                };
-
-                let Ok(application_proxy) = zbus::ProxyBuilder::new(conn)
-                    .interface("org.a11y.atspi.Application")?
-                    .path(ACCESSIBLE_ROOT_PATH)?
-                    .destination(bus_name.clone())?
-                    .build()
-                    .await
-                else {
-                    continue;
-                };
-
-                let passenger = BusPassenger {
-                    accessible_name,
-                    bus_name,
-                    accessible_proxy,
-                    application_proxy,
-                    stats: ResponseStats::default(),
-                };
-
-                let passenger = Arc::new(Mutex::new(passenger));
-                line.push(passenger);
-            }
-        }
-        line.shrink_to_fit();
-
-        #[cfg(debug_assertions)]
-        for passenger in line.iter() {
-            let guard = passenger.lock().unwrap();
-            println!("{}: {}", guard.bus_name, guard.accessible_name);
+            let server = Arc::new(Mutex::new(server));
+            bus.push(server);
         }
 
-        Ok(BusPassengers { line })
+        Ok(Servers { bus })
     }
 
     #[allow(dead_code)]
-    pub fn get_passenger(&self, name: &str) -> Option<Arc<Mutex<BusPassenger>>> {
-        for passenger in self.line.iter() {
-            let guard = passenger.lock().unwrap();
+    pub fn get_server(&self, name: &str) -> Option<Arc<Mutex<Server>>> {
+        for server in self.bus.iter() {
+            let guard = server.lock().unwrap();
             if guard.bus_name == name {
-                return Some(passenger.clone());
+                return Some(server.clone());
             }
         }
         None

@@ -8,6 +8,7 @@ use atspi::{
     },
 };
 use crossterm::event::{self, Event, KeyCode};
+use futures_lite::future::block_on;
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout},
@@ -28,7 +29,7 @@ use tokio_stream::StreamExt;
 use zbus::zvariant::ObjectPath;
 
 mod bus;
-use bus::BusPassengers;
+use bus::Servers;
 
 mod terminal;
 use terminal::{restore_terminal, setup_terminal};
@@ -112,11 +113,8 @@ struct RtStats {
 }
 
 struct App {
-    // The AT-SPI2 connection
-    a11y_conn: AccessibilityConnection,
-
-    // The bus passengers
-    passengers: BusPassengers,
+    // The bus servers
+    servers: Servers,
 
     // Keeping the score
     tally: ScoreBoard,
@@ -133,12 +131,12 @@ struct App {
 }
 
 impl App {
-    async fn new() -> Result<App> {
-        // Get a connection to the AT-SPI D-Bus service
-        let a11y_conn = atspi_setup_connection().await?;
+    fn new() -> Result<App> {
+        // Get a connection to the AT-SPI D-Bus service, without registering for events.
+        let a11y_conn = block_on(atspi::connection::AccessibilityConnection::open())?;
 
-        // Get the bus passengers
-        let passengers = BusPassengers::new(a11y_conn.connection()).await?;
+        // Get the bus servers
+        let servers = block_on(Servers::new(a11y_conn.connection()))?;
 
         // Init counters
         let tally = ScoreBoard::default();
@@ -154,8 +152,7 @@ impl App {
         let secs_data = Mutex::new(Vec::with_capacity(1800)); // 30 minutes
 
         Ok(App {
-            a11y_conn,
-            passengers,
+            servers,
             tally,
             rt_stats,
             tick_data,
@@ -180,7 +177,7 @@ impl App {
             Ok(_) => self.tally.other_event.plus_one(),
             Err(e) => {
                 self.tally.error.plus_one();
-                let msg = format!("{:?}", e);
+                let msg = format!("{e}");
                 let mut set = self.error_set.lock().unwrap();
                 if !set.contains(&msg) {
                     set.insert(msg);
@@ -253,41 +250,54 @@ async fn atspi_setup_connection() -> Result<AccessibilityConnection> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Create the app's state
-    let app = Arc::new(App::new().await.expect("Failed to create app"));
+    let app = Arc::new(App::new().expect("Failed to create app"));
 
-    // Obtain a stream of AT-SPI events
-    let mut events = app.clone().a11y_conn.event_stream();
+    // Setup tracing
+    #[cfg(feature = "tracing")]
+    console_subscriber::init();
+
+    // Obtain a separate connection, exclusively for events.
+    let stream_conn = atspi_setup_connection().await?;
+    let mut events = stream_conn.event_stream();
 
     // Trigger counters.
     let app_clone = Arc::clone(&app);
     tokio::spawn(async move {
         while let Some(event) = events.next().await {
-            app_clone.on_event(event.map_err(Into::into));
+            app_clone.on_event(event.map_err(Into::into))
         }
+
+        println!("Event stream ended");
+
+        // The event stream has ended.
+        tracing::info!("Event stream ended");
     });
 
     // Each second -> update the secs_data store and reset the counter.
     let app_clone = Arc::clone(&app);
     tokio::spawn(async move {
+        let mut each_second = tokio::time::interval(Duration::from_secs(1));
+
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            each_second.tick().await;
             app_clone.on_second();
         }
     });
 
-    // Walk citizens each 2s. -> acquire response time.
+    // Ping bus servers 2s. -> acquire response time.
     let app_clone = Arc::clone(&app);
     tokio::spawn(async move {
+        let mut in_between = tokio::time::interval(Duration::from_millis(20));
+        let mut each_other_second = tokio::time::interval(Duration::from_secs(2));
+
         loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            let app_clone = Arc::clone(&app_clone);
+            each_other_second.tick().await;
 
-            if app_clone.passengers.line.is_empty() {
-                break;
-            }
-            for passenger in app_clone.passengers.line.iter() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+            for server in app_clone.servers.bus.iter() {
+                in_between.tick().await;
 
-                let Ok(mut guard) = passenger.try_lock() else {
+                let Ok(mut guard) = server.try_lock() else {
                     continue;
                 };
 
