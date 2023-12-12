@@ -4,9 +4,8 @@ use atspi::{
     Role,
 };
 use float_pretty_print::PrettyPrintFloat;
-use futures_lite::future::block_on;
-use std::sync::Mutex;
 use std::{fmt::Formatter, sync::Arc, time::Duration};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 use zbus::{names::BusName, Connection, ProxyBuilder};
 
@@ -17,7 +16,7 @@ pub struct ResponseStats {
     pub min: Option<Duration>,
     pub max: Option<Duration>,
     pub mean: Option<Duration>,
-    pub variance: u128,
+    pub sosd: u128, // sum of squared differences
     pub std_dev: Option<Duration>,
 }
 
@@ -28,18 +27,18 @@ impl std::fmt::Display for ResponseStats {
         let to_pretty = |duration: Duration| -> String {
             if duration.as_secs() > 0 {
                 let millis = duration.as_millis() as f64 / 1_000.0;
-                format!("{}s", PrettyPrintFloat(millis))
+                format!("{:10}s", PrettyPrintFloat(millis))
             } else if duration.as_millis() > 0 {
                 let micros = duration.as_micros() as f64 / 1_000.0;
-                format!("{}ms", PrettyPrintFloat(micros))
+                format!("{:10}ms", PrettyPrintFloat(micros))
             } else if duration.as_micros() > 0 {
                 let nanos = duration.as_nanos() as f64 / 1_000.0;
-                format!("{:5.2}us", PrettyPrintFloat(nanos))
+                format!("{:10}us", PrettyPrintFloat(nanos))
             } else if duration.as_nanos() > 0 {
                 let nanos = duration.as_nanos();
-                format!("{}ns", nanos)
+                format!("{:10}ns", nanos)
             } else {
-                format!("{}ns", PrettyPrintFloat(0.0f64))
+                format!("{:10}ns", PrettyPrintFloat(0.0f64))
             }
         };
 
@@ -81,11 +80,11 @@ impl Server {
         self.accessible_proxy.name().await
     }
 
-    pub fn acquire_rtt(&self) -> Option<Duration> {
+    pub async fn acquire_rtt(&self) -> Option<Duration> {
         let deadline = Duration::from_millis(50);
         let start = std::time::Instant::now();
 
-        if block_on(timeout(deadline, self.get_role())).is_ok() {
+        if timeout(deadline, self.get_role()).await.is_ok() {
             return Some(start.elapsed());
         }
 
@@ -102,24 +101,26 @@ impl Server {
 
         self.stats.sum += res;
         self.stats.samples += 1;
-        self.stats.mean = Some(self.stats.sum / self.stats.samples);
 
-        let diff = res - self.stats.mean.unwrap();
-        self.stats.variance += diff.as_nanos() * diff.as_nanos();
+        let mean = self.stats.sum / self.stats.samples;
+        self.stats.mean.replace(mean);
 
-        // Calculate standard deviation
-        self.stats.std_dev = {
-            let variance_nanos = self.stats.variance as f64;
-            let variance_sqrt = variance_nanos.sqrt();
-            let standard_deviation_nanos = variance_sqrt.round() as u64;
-            Some(Duration::from_nanos(standard_deviation_nanos))
-        };
+        // let diff = res.abs_diff(mean); // unstable feature
+        let diff = if res > mean { res - mean } else { mean - res };
+
+        // calculate sum of squared differences, "sosd"
+        self.stats.sosd += diff.as_nanos() * diff.as_nanos();
+
+        let variance_nanos = self.stats.sosd as f64 / self.stats.samples as f64;
+
+        let std_dev = variance_nanos.sqrt().round() as u64;
+        self.stats.std_dev.replace(Duration::from_nanos(std_dev));
     }
 }
 
 #[derive(Debug)]
 pub struct Servers {
-    pub bus: Vec<Arc<Mutex<Server>>>,
+    pub bus: Vec<Arc<AsyncMutex<Server>>>,
 }
 
 impl Servers {
@@ -133,7 +134,7 @@ impl Servers {
 
         // Registry considers all accessible programs on the bus its children.
         let a11ies = registry_as_accessible.get_children().await?;
-        let mut bus: Vec<Arc<Mutex<Server>>> = Vec::with_capacity(a11ies.len());
+        let mut bus: Vec<Arc<AsyncMutex<Server>>> = Vec::with_capacity(a11ies.len());
 
         for a11y in a11ies {
             let name = a11y.name.clone();
@@ -149,8 +150,6 @@ impl Servers {
             let Ok(accessible_name) = accessible_proxy.name().await else {
                 continue;
             };
-            #[cfg(debug_assertions)]
-            println!(" ({})", accessible_name);
 
             let Ok(application_proxy) = zbus::ProxyBuilder::new(conn)
                 .interface("org.a11y.atspi.Application")?
@@ -172,7 +171,7 @@ impl Servers {
                 stats: ResponseStats::default(),
             };
 
-            let server = Arc::new(Mutex::new(server));
+            let server = Arc::new(AsyncMutex::new(server));
             bus.push(server);
         }
 
@@ -180,13 +179,21 @@ impl Servers {
     }
 
     #[allow(dead_code)]
-    pub fn get_server(&self, name: &str) -> Option<Arc<Mutex<Server>>> {
+    pub fn get_server(&self, name: &str) -> Option<Arc<AsyncMutex<Server>>> {
         for server in self.bus.iter() {
-            let guard = server.lock().unwrap();
+            let guard = server.blocking_lock();
             if guard.bus_name == name {
                 return Some(server.clone());
             }
         }
         None
+    }
+
+    #[allow(dead_code)]
+    pub fn remove_server(&mut self, name: &str) {
+        self.bus.retain(|server| {
+            let guard = server.blocking_lock();
+            guard.bus_name != name
+        });
     }
 }

@@ -7,27 +7,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# atspi = { git = "https://github.com/odilia-app/atspi.git", default-features = false, features = ["tokio","proxies","connection",] }
-# atspi = { path = "../atspi-fix-signals/atspi/atspi", default-features = false, features = ["tokio", "tracing", "proxies", "connection"]  }
-# atspi = { git = "https://github.com/odilia-app/atspi.git", branch="add-details-to-unknown-bus-signature", default-features = false, features = ["tokio", "proxies", "connection"]  }
-atspi = { path = "../atspi-fix-events/atspi/atspi", default-features = false, features = ["tokio", "proxies", "connection"] }
-
-futures-lite = "1.13.0"
-tokio = { version = "1.32", features = ["full", "tracing"] }
-tokio-stream = { version = "0.1.14", features = ["full"] }
-zbus = { version = "3.14.1", features = ["tokio"] }
+atspi = { version = "0.20.0", default-features  = false, features = ["tokio","proxies","connection"] }
+console-subscriber = "0.2.0"
 crossterm = "0.27"
-ratatui = "0.23.0"
 float-pretty-print = "0.1.1"
+futures-lite = "2.1.0"
+once_cell = "1.19.0"
+ratatui = "0.24.0"
+tokio = { version = "1.35.0", default-features=false, features = ["rt", "rt-multi-thread", "tokio-macros", "tracing"] }
+tokio-stream = { version = "0.1.14", features = ["full"] }
 tracing = "0.1.37"
-console-subscriber = "0.1.10"
-
-[profile.release]
-lto = true
-opt-level = 3
-codegen-units = 1
-
-[profile.dev]
-lto = false
-opt-level = 0
-
+zbus = { version = "3.14.1", features = ["tokio"] }

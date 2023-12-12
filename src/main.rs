@@ -8,7 +8,6 @@ use atspi::{
     },
 };
 use crossterm::event::{self, Event, KeyCode};
-use futures_lite::future::block_on;
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout},
@@ -60,13 +59,13 @@ impl Counter {
     }
 
     /// Increment counter by one.
-    pub fn plus_one(&self) {
+    pub fn incr(&self) {
         let _ = self.counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increment counter by `value`.
     /// Returns the previous value.
-    pub fn plus(&self, value: u64) -> u64 {
+    pub fn add(&self, value: u64) -> u64 {
         self.counter.fetch_add(value, Ordering::Relaxed)
     }
 
@@ -131,12 +130,12 @@ struct App {
 }
 
 impl App {
-    fn new() -> Result<App> {
+    async fn new() -> Result<App> {
         // Get a connection to the AT-SPI D-Bus service, without registering for events.
-        let a11y_conn = block_on(atspi::connection::AccessibilityConnection::open())?;
+        let a11y_conn = atspi::connection::AccessibilityConnection::new().await?;
 
         // Get the bus servers
-        let servers = block_on(Servers::new(a11y_conn.connection()))?;
+        let servers = Servers::new(a11y_conn.connection()).await?;
 
         // Init counters
         let tally = ScoreBoard::default();
@@ -164,19 +163,19 @@ impl App {
     // Event -> update counters.
     fn on_event(&self, event: Result<AtspiEvent>) {
         match event {
-            Ok(AtspiEvent::Mouse(_)) => self.tally.mouse.plus_one(),
-            Ok(AtspiEvent::Keyboard(_)) => self.tally.keyboard.plus_one(),
-            Ok(AtspiEvent::Focus(_)) => self.tally.focus.plus_one(),
-            Ok(AtspiEvent::Window(_)) => self.tally.window.plus_one(),
-            Ok(AtspiEvent::Document(_)) => self.tally.document.plus_one(),
-            Ok(AtspiEvent::Object(_)) => self.tally.object.plus_one(),
-            Ok(AtspiEvent::Terminal(_)) => self.tally.terminal.plus_one(),
-            Ok(AtspiEvent::Cache(_)) => self.tally.cache.plus_one(),
-            Ok(AtspiEvent::Listener(_)) => self.tally.listeners.plus_one(),
-            Ok(AtspiEvent::Available(_)) => self.tally.available.plus_one(),
-            Ok(_) => self.tally.other_event.plus_one(),
+            Ok(AtspiEvent::Mouse(_)) => self.tally.mouse.incr(),
+            Ok(AtspiEvent::Keyboard(_)) => self.tally.keyboard.incr(),
+            Ok(AtspiEvent::Focus(_)) => self.tally.focus.incr(),
+            Ok(AtspiEvent::Window(_)) => self.tally.window.incr(),
+            Ok(AtspiEvent::Document(_)) => self.tally.document.incr(),
+            Ok(AtspiEvent::Object(_)) => self.tally.object.incr(),
+            Ok(AtspiEvent::Terminal(_)) => self.tally.terminal.incr(),
+            Ok(AtspiEvent::Cache(_)) => self.tally.cache.incr(),
+            Ok(AtspiEvent::Listener(_)) => self.tally.listeners.incr(),
+            Ok(AtspiEvent::Available(_)) => self.tally.available.incr(),
+            Ok(_) => self.tally.other_event.incr(),
             Err(e) => {
-                self.tally.error.plus_one();
+                self.tally.error.incr();
                 let msg = format!("{e}");
                 let mut set = self.error_set.lock().unwrap();
                 if !set.contains(&msg) {
@@ -184,9 +183,9 @@ impl App {
                 }
             }
         }
-        self.tally.tick_counter.plus_one();
-        self.tally.secs_counter.plus_one();
-        self.tally.total.plus_one();
+        self.tally.tick_counter.incr();
+        self.tally.secs_counter.incr();
+        self.tally.total.incr();
     }
 
     /// Update the per-tick data store and reset the per-tick counter.
@@ -210,7 +209,7 @@ impl App {
         }
 
         self.rt_stats.rate.set(value);
-        self.tally.total_seconds.plus(value);
+        self.tally.total_seconds.add(value);
 
         // Per second data:
         let mut data = self.secs_data.lock().unwrap();
@@ -221,9 +220,9 @@ impl App {
     }
 }
 
-async fn atspi_setup_connection() -> Result<AccessibilityConnection> {
+async fn setup_atspi() -> Result<AccessibilityConnection> {
     // Get a connection to the AT-SPI D-Bus service
-    let atspi: AccessibilityConnection = AccessibilityConnection::open().await?;
+    let atspi: AccessibilityConnection = AccessibilityConnection::new().await?;
 
     // Register for events
     atspi.register_event::<MouseEvents>().await?;
@@ -250,15 +249,15 @@ async fn atspi_setup_connection() -> Result<AccessibilityConnection> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Create the app's state
-    let app = Arc::new(App::new().expect("Failed to create app"));
+    let app = Arc::new(App::new().await.expect("creation of app-state"));
 
     // Setup tracing
     #[cfg(feature = "tracing")]
     console_subscriber::init();
 
-    // Obtain a separate connection, exclusively for events.
-    let stream_conn = atspi_setup_connection().await?;
-    let mut events = stream_conn.event_stream();
+    // Obtain a connection for events.
+    let atspi_conn = setup_atspi().await?;
+    let mut events = atspi_conn.event_stream();
 
     // Trigger counters.
     let app_clone = Arc::clone(&app);
@@ -267,13 +266,10 @@ async fn main() -> Result<()> {
             app_clone.on_event(event.map_err(Into::into))
         }
 
-        println!("Event stream ended");
-
         // The event stream has ended.
         tracing::info!("Event stream ended");
     });
 
-    // Each second -> update the secs_data store and reset the counter.
     let app_clone = Arc::clone(&app);
     tokio::spawn(async move {
         let mut each_second = tokio::time::interval(Duration::from_secs(1));
@@ -288,11 +284,11 @@ async fn main() -> Result<()> {
     let app_clone = Arc::clone(&app);
     tokio::spawn(async move {
         let mut in_between = tokio::time::interval(Duration::from_millis(20));
-        let mut each_other_second = tokio::time::interval(Duration::from_secs(2));
+        let mut every_other_second = tokio::time::interval(Duration::from_secs(2));
 
         loop {
             let app_clone = Arc::clone(&app_clone);
-            each_other_second.tick().await;
+            every_other_second.tick().await;
 
             for server in app_clone.servers.bus.iter() {
                 in_between.tick().await;
@@ -301,7 +297,7 @@ async fn main() -> Result<()> {
                     continue;
                 };
 
-                if let Some(dur) = guard.acquire_rtt() {
+                if let Some(dur) = guard.acquire_rtt().await {
                     guard.update_rtt_stats(dur);
                 }
             }
@@ -309,7 +305,7 @@ async fn main() -> Result<()> {
     });
 
     // setup terminal
-    let mut terminal = setup_terminal().expect("msg: setup_terminal failed");
+    let mut terminal = setup_terminal().expect("setup terminal");
 
     let app_clone = Arc::clone(&app);
     let res = run_app(&mut terminal, app_clone, TICK_MS);
@@ -318,27 +314,32 @@ async fn main() -> Result<()> {
     restore_terminal(&mut terminal)?;
 
     if let Err(err) = res {
-        println!("{:?}", err)
+        tracing::error!("Error: {err}");
     }
 
     Ok(())
 }
 
+/// Returns the remaining time until the next tick, or zero if the next tick is overdue.
+fn get_remaining_tick_time(tick_dur: Duration, last_tick: Instant) -> Duration {
+    tick_dur
+        .checked_sub(last_tick.elapsed())
+        .unwrap_or_else(|| Duration::from_secs(0))
+}
+
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: Arc<App>,
-    tick_rate: Duration,
+    tick_dur: Duration,
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
 
-    let app = Arc::clone(&app);
     loop {
         let app_clone = Arc::clone(&app);
         terminal.draw(|f| ui(f, app_clone))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
+        let timeout = get_remaining_tick_time(tick_dur, last_tick);
+
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if let KeyCode::Char('q') = key.code {
@@ -348,14 +349,14 @@ fn run_app<B: Backend>(
         }
 
         let app_clone = Arc::clone(&app);
-        if last_tick.elapsed() >= tick_rate {
+        if last_tick.elapsed() >= tick_dur {
             app_clone.on_tick();
             last_tick = Instant::now();
         }
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
+fn ui(f: &mut Frame, app: Arc<App>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
@@ -373,8 +374,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
         .split(bottom[0]);
 
     let bottom_right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
         .split(bottom[1]);
 
     let tick_data = app.tick_data.lock().unwrap();
@@ -570,8 +571,34 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: Arc<App>) {
     .highlight_style(Style::default().fg(Color::Red))
     .highlight_symbol(">> ");
 
+    let server_stats = &app.servers.bus;
+
+    let server_list = ratatui::widgets::List::new(
+        server_stats
+            .iter()
+            .map(|server| {
+                if let Ok(guard) = server.try_lock() {
+                    ListItem::new(format!("{}:\n\t{}\n", guard.accessible_name, guard.stats))
+                } else {
+                    ListItem::new(format!("Server contended for lock"))
+                }
+            })
+            .collect::<Vec<ListItem<'_>>>(),
+    )
+    .block(
+        Block::default()
+            .title("Server response time stats")
+            .border_style(Style::default().fg(Color::LightBlue))
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .borders(Borders::ALL),
+    )
+    .style(Style::default().fg(Color::LightYellow))
+    .highlight_style(Style::default().fg(Color::Blue))
+    .highlight_symbol(">> ");
+
     f.render_widget(sparkline, chunks[0]);
     f.render_widget(rates, bottom_left[0]);
     f.render_widget(categories, bottom_left[1]);
     f.render_widget(error_list, bottom_right[0]);
+    f.render_widget(server_list, bottom_right[1]);
 }
